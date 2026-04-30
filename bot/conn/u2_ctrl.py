@@ -24,6 +24,31 @@ log = logger.get_logger(__name__)
 INPUT_BLOCKED = False
 IN_CAREER_RUN = False
 
+###### warning image detection #####
+## lobby/main exit if stop image is detected, will prob need to add more
+## screen = self.ctrl.get_screen()
+##   self.ctrl.check_stop_at_lobby(screen)
+
+STOP_IMAGE_PATH       = "bot/conn/stop_signal.png"
+STOP_IMAGE_CONFIDENCE = 0.85   # 0.0–1.0  (lower = more tolerant)
+
+_stop_image_template = None
+
+def _load_stop_template():
+    global _stop_image_template
+    if _stop_image_template is None:
+        try:
+            tmpl = cv2.imread(STOP_IMAGE_PATH, cv2.IMREAD_COLOR)
+            if tmpl is not None:
+                _stop_image_template = tmpl
+                log.info(f"[STOP] Loaded stop image from '{STOP_IMAGE_PATH}'")
+            else:
+                log.warning(f"[STOP] Could not read '{STOP_IMAGE_PATH}' — stop detection disabled.")
+        except Exception as e:
+            log.warning(f"[STOP] Error loading stop image: {e}")
+    return _stop_image_template
+##
+
 
 @dataclass
 class U2AndroidConfig:
@@ -239,6 +264,27 @@ class U2AndroidController(AndroidController):
         self._cached_frame = None
         return None
 
+### stop-image check from main menu handler, check and exit or continue
+    ## call at top of lobby, image is in the same folder bc i'm lazy
+    
+    def check_stop_at_lobby(self, screen_bgr=None) -> None:
+        img = screen_bgr if screen_bgr is not None else self.get_screen()
+        if img is None:
+            return
+        tmpl = _load_stop_template()
+        if tmpl is None:
+            return
+        try:
+            result = cv2.matchTemplate(img, tmpl, cv2.TM_CCOEFF_NORMED)
+            _, max_val, _, _ = cv2.minMaxLoc(result)
+            if max_val >= STOP_IMAGE_CONFIDENCE:
+                log.info(f"[STOP] Stop image matched at lobby (confidence={max_val:.2f}) — exiting bot.")
+                import sys
+                sys.exit(0)
+        except Exception as e:
+            log.warning(f"[STOP] Template match error: {e}")
+##
+
     def in_fallback_block(self, name):
         if isinstance(name, str) and name == "Default fallback click":
             if time.time() < getattr(self, "fallback_block_until", 0.0):
@@ -337,8 +383,10 @@ class U2AndroidController(AndroidController):
 
     def randomize_and_clamp(self, x, y, random_offset, max_x, max_y):
         if random_offset:
-            x += int(max(-8, min(8, random.gauss(0, 3))))
-            y += int(max(-8, min(8, random.gauss(0, 3))))
+ ### pixel sample from 6 px to 15 px
+            x += int(max(-15, min(15, random.gauss(0, 5))))
+            y += int(max(-15, min(15, random.gauss(0, 5))))
+# 
         if x >= max_x:
             x = max_x-1
         if y >= max_y:
@@ -358,16 +406,29 @@ class U2AndroidController(AndroidController):
         if wait_needed > 0:
             time.sleep(wait_needed)
 
+### fake AFK helper 3% chance & 4–10s pause
+    def _maybe_afk_pause(self):
+        if random.random() < 0.03:
+            afk_dur = random.uniform(4.0, 10.0)
+            log.info(f"[AFK] Simulating idle pause for {afk_dur:.1f}s")
+            time.sleep(afk_dur)
+##
+    
     def tap(self, x, y, hold_duration):
         duration = int(max(50, min(180, random.gauss(90, 30)))) + hold_duration
         drift_x = x + random.randint(-3, 3)
         drift_y = y + random.randint(-3, 3)
         _ = self.execute_adb_shell(f"shell input swipe {x} {y} {drift_x} {drift_y} {duration}", True)
         self.last_click_time = time.time()
-        time.sleep(self.config.delay)
-        if not IN_CAREER_RUN:
-            time.sleep(0.5)
 
+### post-tap delay ──────────────────────────────
+        time.sleep(self.config.delay * random.uniform(0.3, 1.5))
+        if not IN_CAREER_RUN:
+            time.sleep(random.uniform(0.3, 0.9))   # was fixed 0.5
+##
+### AFK pause
+        self._maybe_afk_pause()
+##
     def init_env(self) -> None:
         try:
             result = subprocess.run(
@@ -461,7 +522,13 @@ class U2AndroidController(AndroidController):
         duration = int(duration * random.uniform(0.94, 1.06))
         
         _ = self.execute_adb_shell(f"shell input swipe {x1} {y1} {x2} {y2} {duration}", True)
-        time.sleep(self.config.delay)
+
+### post-swipe delay
+    time.sleep(self.config.delay * random.uniform(0.7, 1.5))
+
+
+### AFK pause
+     self._maybe_afk_pause()
 
     def swipe_and_hold(self, x1, y1, x2, y2, swipe_duration, hold_duration, name=""):
         if INPUT_BLOCKED:
@@ -480,7 +547,11 @@ class U2AndroidController(AndroidController):
         _ = self.execute_adb_shell("shell input swipe " + str(x1) + " " + str(y1) + " " + str(x2) + " " + str(y2) + " " + str(swipe_duration), True)
         _ = self.execute_adb_shell("shell input swipe " + str(x2) + " " + str(y2) + " " + str(x2) + " " + str(reverse_y) + " " + str(hold_duration), True)
         
-        time.sleep(self.config.delay)
+### add post-swipe_and_hold delay
+    time.sleep(self.config.delay * random.uniform(0.7, 1.5))
+
+### add AFK pause
+     self._maybe_afk_pause()
 
     # ===== common =====
 
@@ -538,7 +609,6 @@ class U2AndroidController(AndroidController):
 
     # get_front_activity 获取前台正在运行的应用
     def get_front_activity(self):
-
         rsp = self.execute_adb_shell("shell \"dumpsys window windows | grep \"Current\"\"", True).communicate()
         log.debug(str(rsp))
         return str(rsp)
