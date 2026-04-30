@@ -53,6 +53,7 @@ def get_medic(ctx, summer=False):
 
 def script_cultivate_main_menu(ctx: UmamusumeContext):
     img = ctx.current_screen
+    ctx.ctrl.check_stop_at_lobby(img)
     current_date = parse_date(img, ctx)
     import bot.conn.u2_ctrl as u2c
     u2c.IN_CAREER_RUN = True
